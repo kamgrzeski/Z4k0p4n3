@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zakopane</title>
+    <link rel="icon" href="data:,">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <style>
+        /* Odtwarzacz: proporcje 16:9 zamiast pełnej wysokości ekranu, żeby menu było widoczne na telefonie */
+        .player { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; }
+        #video { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+        #offline { display: none; position: absolute; inset: 0; z-index: 10; background: rgba(0,0,0,.8); align-items: center; justify-content: center; flex-direction: column; gap: 1rem; text-align: center; padding: 1rem; }
+
+        /* Menu */
+        .menu-group { font-size: .85rem; text-transform: uppercase; letter-spacing: .05em; opacity: .6; margin: .75rem 0 .25rem; }
+        .menu .row > div { display: flex; }
+        .menu .btn { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; }
+        .menu .btn.current { box-shadow: 0 0 0 3px #fff; }
+        #notice:empty { display: none; }
+    </style>
+</head>
+<body class="bg-dark text-light">
+<noscript><div class="p-3">Włącz JavaScript, aby oglądać kamery.</div></noscript>
+
+<div class="player">
+    <video id="video" controls autoplay muted playsinline></video>
+    <div id="offline">
+        <div>Kamera chwilowo niedostępna. Ponawiam co 30 s.</div>
+        <button id="check" class="btn btn-light">Sprawdź kamerę</button>
+        <div id="check-status"></div>
+        <a id="open-stream" target="_blank" rel="noopener" class="small text-info">Otwórz strumień w nowej karcie</a>
+    </div>
+</div>
+
+<div id="menu" class="menu py-2 container-fluid">
+    <div id="notice" class="alert alert-warning mb-2"></div>
+    <div id="menu-list"></div>
+</div>
+
+<script>
+    const CAMERAS = [
+        { key: 'index',                    group: 'Krupówki',            title: 'Krupówki środkowe',                       url: 'https://hoktastream2.webcamera.pl/zakopanet_cam_4e4a21/zakopanet_cam_4e4a21.stream/playlist.m3u8' },
+        { key: 'krupowki_zapiecek',        group: 'Krupówki',            title: 'Krupówki Zapiecek',                       url: 'https://hoktastream4.webcamera.pl/zakopane_cam_cd5b2d_reklamy/zakopane_cam_cd5b2d_reklamy.stream/playlist.m3u8' },
+        { key: 'krupowki_pstrag',          group: 'Krupówki',            title: 'Krupówki Pstrąg',                         url: 'https://hoktastream5.webcamera.pl/krupowki2_cam_62169a/krupowki2_cam_62169a.stream/playlist.m3u8' },
+        { key: 'krupowki_watra',           group: 'Krupówki',            title: 'Krupówki Watra',                          url: 'https://hoktastream3.webcamera.pl/nocowanie_cam_8fede2/nocowanie_cam_8fede2.stream/playlist.m3u8' },
+        { key: 'krupowki_goralski_browar', group: 'Krupówki',            title: 'Góralski Browar',                         url: 'https://hoktastream3.webcamera.pl/krupowki2_cam_91ea39/krupowki2_cam_91ea39.stream/playlist.m3u8' },
+        { key: 'gwarno',                   group: 'Krupówki',            title: 'Gwarno',                                  url: 'https://hoktastream2.webcamera.pl/krupowki2_cam_305cd7/krupowki2_cam_305cd7.stream/playlist.m3u8' },
+        { key: 'kasprowy-gasienicowa',     group: 'Kasprowy i Gubałówka', title: 'Kasprowy Gąsienicowa',                    url: 'https://hoktastream1.webcamera.pl/pkl_cam_c9ee88/pkl_cam_c9ee88.stream/playlist.m3u8' },
+        { key: 'kasprowy_wierch',          group: 'Kasprowy i Gubałówka', title: 'Kasprowy Wierch',                         url: 'https://hoktastream2.webcamera.pl/pkl_cam_823d20/pkl_cam_823d20.stream/playlist.m3u8' },
+        { key: 'kuznice',                  group: 'Kasprowy i Gubałówka', title: 'Kuźnice',                                 url: 'https://hoktastream2.webcamera.pl/pkl_cam_473633/pkl_cam_473633.stream/playlist.m3u8' },
+        { key: 'gubalowka',                group: 'Kasprowy i Gubałówka', title: 'Gubałówka',                               url: 'https://hoktastream1.webcamera.pl/pkl_cam_cc787e/pkl_cam_cc787e.stream/playlist.m3u8' },
+        { key: 'gubalowka_panorama',       group: 'Kasprowy i Gubałówka', title: 'Gubałówka Panorama',                      url: 'https://hoktastream1.webcamera.pl/pkl_cam_f4e890/pkl_cam_f4e890.stream/playlist.m3u8' },
+        { key: 'koscielisko',              group: 'Kościelisko',         title: 'Kościelisko',                             url: 'https://hoktastream1.webcamera.pl/salamander_cam_d22157/salamander_cam_d22157.stream/playlist.m3u8' },
+        { key: 'koscielisko_new',          group: 'Kościelisko',         title: 'Kościelisko - widok',              url: 'https://hoktastream5.webcamera.pl/salamander_cam_d22157/salamander_cam_d22157.stream/playlist.m3u8' },
+        { key: 'KOZINIEC_ski',             group: 'Kościelisko',         title: 'KOZINIEC ski',                            url: 'https://hoktastream2.webcamera.pl/koziniecski_cam_a08d36/koziniecski_cam_a08d36.stream/playlist.m3u8' },
+        { key: 'butorowy',                 group: 'Kościelisko',         title: 'Butorowy Wierch',                         url: 'https://hoktastream2.webcamera.pl/pkl_cam_3d4e1a/pkl_cam_3d4e1a.stream/playlist.m3u8' },
+        { key: 'gril_hej',                 group: 'Inne',                title: 'Skocznia',                                url: 'https://hoktastream1.webcamera.pl/wielka-krokiew_cam_b29b5d/wielka-krokiew_cam_b29b5d.stream/playlist.m3u8' },
+        { key: 'polana_szymoszkowa',       group: 'Inne',                title: 'Polana Szymoszkowa',                      url: 'https://hoktastream1.webcamera.pl/skywind_cam_dc315e/skywind_cam_dc315e.stream/playlist.m3u8' },
+        { key: 'harenda',                  group: 'Inne',                title: 'Harenda SKI',                             url: 'https://hoktastream1.webcamera.pl/skywind_cam_62d9a1/skywind_cam_62d9a1.stream/playlist.m3u8' },
+        { key: 'hotel_redyk',              group: 'Inne',                title: 'Hotel Redyk',                             url: 'https://hoktastream3.webcamera.pl/redyk_cam_1eccec/redyk_cam_1eccec.stream/playlist.m3u8' },
+        { key: 'panorama_willa',           group: 'Inne',                title: 'Panorama Tatr z Willi Piękne Widoki',     url: 'https://hoktastream1.webcamera.pl/willa_cam_922439/willa_cam_922439.stream/playlist.m3u8' },
+        { key: 'rzepiska_tatry',           group: 'Inne',                title: 'Rzepiska - Tatry',                        url: 'https://hoktastream1.webcamera.pl/airnet_cam_d60f3c/airnet_cam_d60f3c.stream/playlist.m3u8' },
+        { key: 'tatry_panorama',           group: 'Inne',                title: 'Tatry Panorama',                          url: 'https://hoktastream1.webcamera.pl/skywind_cam_1f9295/skywind_cam_1f9295.stream/playlist.m3u8', inMenu: false },
+    ];
+
+    // Każda grupa ma własny kolor przycisków (klasa Bootstrap btn-<kolor>)
+    const GROUPS = [
+        { name: 'Krupówki',             color: 'primary' },
+        { name: 'Kasprowy i Gubałówka', color: 'success' },
+        { name: 'Kościelisko',          color: 'warning' },
+        { name: 'Inne',                 color: 'info' },
+    ];
+
+    const RETRY_MS = 30000;
+    const camKey = new URLSearchParams(location.search).get('cam');
+    const found = CAMERAS.find(c => c.key === camKey);
+    const current = found || CAMERAS[0];
+
+    const video = document.getElementById('video');
+    const offline = document.getElementById('offline');
+    const statusEl = document.getElementById('check-status');
+    const canHls = typeof Hls !== 'undefined' && Hls.isSupported();
+    let hls = null;
+    let retryTimer = null;
+
+    // Menu pogrupowane według miejsc; aktywna kamera wyróżniona
+    const menuHtml = GROUPS.map(group => {
+        const items = CAMERAS.filter(c => c.inMenu !== false && c.group === group.name);
+        if (!items.length) return '';
+        const buttons = items.map(c => {
+            const active = c.key === current.key;
+            const cls = `btn-${group.color}${active ? ' current' : ''}`;
+            const aria = active ? ' aria-current="page"' : '';
+            return `<div class="col-6 col-md-4 col-lg-3"><a class="btn ${cls}" href="?cam=${c.key}"${aria}>${c.title}</a></div>`;
+        }).join('');
+        return `<div class="menu-group">${group.name}</div><div class="row g-2">${buttons}</div>`;
+    }).join('');
+    document.getElementById('menu-list').innerHTML = menuHtml;
+
+    if (camKey && !found) {
+        document.getElementById('notice').textContent = `Nie znaleziono kamery „${camKey}”. Pokazano: ${current.title}.`;
+    }
+    document.title = `Zakopane – ${current.title}`;
+    document.getElementById('open-stream').href = current.url;
+
+    function setOffline(show) {
+        offline.style.display = show ? 'flex' : 'none';
+    }
+
+    function play() {
+        video.play().catch(() => { /* autoplay zablokowany – użytkownik włączy ręcznie */ });
+    }
+
+    function onFail() {
+        setOffline(true);
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(startPlayer, RETRY_MS);
+    }
+
+    function startPlayer() {
+        clearTimeout(retryTimer);
+        if (hls) { hls.destroy(); hls = null; }
+
+        if (canHls) {
+            hls = new Hls();
+            hls.loadSource(current.url);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => { setOffline(false); play(); });
+            hls.on(Hls.Events.ERROR, (event, data) => {
+                if (!data.fatal) return;
+                if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                    hls.recoverMediaError();
+                } else {
+                    hls.destroy();
+                    hls = null;
+                    onFail();
+                }
+            });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Starsze iOS Safari: natywne HLS
+            video.src = current.url;
+            play();
+        } else {
+            onFail();
+        }
+    }
+
+    // Natywne HLS (iOS): zdarzenia z elementu video
+    video.addEventListener('loadedmetadata', () => setOffline(false));
+    video.addEventListener('error', () => { if (!canHls) onFail(); });
+
+    // Ręczne sprawdzenie: osobna próba załadowania playlisty
+    document.getElementById('check').addEventListener('click', () => {
+        statusEl.textContent = 'Sprawdzanie...';
+        if (!canHls) {
+            statusEl.textContent = 'Ponawiam uruchomienie...';
+            startPlayer();
+            return;
+        }
+        const test = new Hls();
+        test.loadSource(current.url);
+        test.on(Hls.Events.MANIFEST_PARSED, () => {
+            test.destroy();
+            statusEl.textContent = 'Kamera działa – uruchamiam...';
+            startPlayer();
+        });
+        test.on(Hls.Events.ERROR, (event, data) => {
+            if (!data.fatal) return;
+            test.destroy();
+            statusEl.textContent = 'Kamera nadal niedostępna (' + data.details + ').';
+        });
+    });
+
+    startPlayer();
+</script>
+</body>
+</html>
