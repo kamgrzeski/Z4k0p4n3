@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Zakopane</title>
     <link rel="icon" href="data:,">
-    <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js" integrity="sha384-p9vgU/7IYJWd3I4STrtqxqR/2cAQlhIX7D/HrTnIMEjjcUox165b7se7sxmm3zDg" crossorigin="anonymous"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
     <style>
         /* Odtwarzacz: proporcje 16:9 zamiast pełnej wysokości ekranu, żeby menu było widoczne na telefonie */
@@ -28,9 +28,9 @@
 <div class="player">
     <video id="video" controls autoplay muted playsinline></video>
     <div id="offline">
-        <div>Kamera chwilowo niedostępna. Ponawiam co 30 s.</div>
+        <div id="offline-msg" role="alert">Kamera chwilowo niedostępna. Ponawiam co 30 s.</div>
         <button id="check" class="btn btn-light">Sprawdź kamerę</button>
-        <div id="check-status"></div>
+        <div id="check-status" role="status" aria-live="polite"></div>
         <a id="open-stream" target="_blank" rel="noopener" class="small text-info">Otwórz strumień w nowej karcie</a>
     </div>
 </div>
@@ -66,15 +66,18 @@
         { key: 'tatry_panorama',           group: 'Inne',                title: 'Tatry Panorama',                          url: 'https://hoktastream1.webcamera.pl/skywind_cam_1f9295/skywind_cam_1f9295.stream/playlist.m3u8', inMenu: false },
     ];
 
-    // Każda grupa ma własny kolor przycisków (klasa Bootstrap btn-<kolor>)
-    const GROUPS = [
-        { name: 'Krupówki',             color: 'primary' },
-        { name: 'Kasprowy i Gubałówka', color: 'success' },
-        { name: 'Kościelisko',          color: 'warning' },
-        { name: 'Inne',                 color: 'info' },
-    ];
+    // Ustawienia. Kolor grupy to klasa Bootstrap btn-<kolor>.
+    const CONFIG = {
+        RETRY_MS: 30000,        // co ile ponawiać po awarii
+        TEST_TIMEOUT_MS: 15000, // ile czekać na odpowiedź przy ręcznym sprawdzaniu
+        GROUPS: [
+            { name: 'Krupówki',             color: 'primary' },
+            { name: 'Kasprowy i Gubałówka', color: 'success' },
+            { name: 'Kościelisko',          color: 'warning' },
+            { name: 'Inne',                 color: 'info' },
+        ],
+    };
 
-    const RETRY_MS = 30000;
     const camKey = new URLSearchParams(location.search).get('cam');
     const found = CAMERAS.find(c => c.key === camKey);
     const current = found || CAMERAS[0];
@@ -87,7 +90,7 @@
     let retryTimer = null;
 
     // Menu pogrupowane według miejsc; aktywna kamera wyróżniona
-    const menuHtml = GROUPS.map(group => {
+    const menuHtml = CONFIG.GROUPS.map(group => {
         const items = CAMERAS.filter(c => c.inMenu !== false && c.group === group.name);
         if (!items.length) return '';
         const buttons = items.map(c => {
@@ -117,7 +120,7 @@
     function onFail() {
         setOffline(true);
         clearTimeout(retryTimer);
-        retryTimer = setTimeout(startPlayer, RETRY_MS);
+        retryTimer = setTimeout(startPlayer, CONFIG.RETRY_MS);
     }
 
     function startPlayer() {
@@ -152,26 +155,50 @@
     video.addEventListener('loadedmetadata', () => setOffline(false));
     video.addEventListener('error', () => { if (!canHls) onFail(); });
 
-    // Ręczne sprawdzenie: osobna próba załadowania playlisty
-    document.getElementById('check').addEventListener('click', () => {
-        statusEl.textContent = 'Sprawdzanie...';
+    // Sprawdza playlistę osobną instancją Hls. Zwraca { ok, details }.
+    // Zawsze się kończy: sukcesem, błędem albo timeoutem.
+    function probe(url) {
+        return new Promise(resolve => {
+            const test = new Hls();
+            let done = false;
+            const finish = result => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                test.destroy();
+                resolve(result);
+            };
+            const timer = setTimeout(() => finish({ ok: false, details: 'brak odpowiedzi' }), CONFIG.TEST_TIMEOUT_MS);
+            test.on(Hls.Events.MANIFEST_PARSED, () => finish({ ok: true }));
+            test.on(Hls.Events.ERROR, (event, data) => {
+                if (data.fatal) finish({ ok: false, details: data.details });
+            });
+            test.loadSource(url);
+        });
+    }
+
+    // Ręczne sprawdzenie: jeden test naraz, przycisk zablokowany w trakcie
+    const checkBtn = document.getElementById('check');
+    let checking = false;
+    checkBtn.addEventListener('click', async () => {
+        if (checking) return;
         if (!canHls) {
             statusEl.textContent = 'Ponawiam uruchomienie...';
             startPlayer();
             return;
         }
-        const test = new Hls();
-        test.loadSource(current.url);
-        test.on(Hls.Events.MANIFEST_PARSED, () => {
-            test.destroy();
+        checking = true;
+        checkBtn.disabled = true;
+        statusEl.textContent = 'Sprawdzanie...';
+        const result = await probe(current.url);
+        checking = false;
+        checkBtn.disabled = false;
+        if (result.ok) {
             statusEl.textContent = 'Kamera działa – uruchamiam...';
             startPlayer();
-        });
-        test.on(Hls.Events.ERROR, (event, data) => {
-            if (!data.fatal) return;
-            test.destroy();
-            statusEl.textContent = 'Kamera nadal niedostępna (' + data.details + ').';
-        });
+        } else {
+            statusEl.textContent = 'Kamera nadal niedostępna (' + result.details + ').';
+        }
     });
 
     startPlayer();
